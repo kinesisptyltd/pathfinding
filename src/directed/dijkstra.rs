@@ -148,6 +148,44 @@ where
     )
 }
 
+/// Determine some reachable nodes from a starting point as well as the minimum cost to
+/// reach them and a possible optimal parent node
+/// using the [Dijkstra search algorithm](https://en.wikipedia.org/wiki/Dijkstra's_algorithm).
+///
+/// - `start` is the starting node.
+/// - `successors` returns a list of successors for a given node, along with the cost for moving
+/// from the node to the successor.
+/// - `cut-off` is the maximum distance allowed. The algorithm stops when points are further away
+/// from the origin than the cutoff distance.
+///
+/// The result is a map where every node examined before the algorithm stopped (not including
+/// `start`) is associated with an optimal parent node and a cost, as well as the node which
+/// caused the algorithm to stop if any.
+///
+/// The [`build_path`] function can be used to build a full path from the starting point to one
+/// of the reachable targets.
+pub fn dijkstra_partial_with_cutoff<N, C, FN, IN>(
+    start: &N,
+    successors: FN,
+    cutoff: C,
+) -> (HashMap<N, (N, C)>, Option<N>)
+where
+    N: Eq + Hash + Clone,
+    C: Zero + Ord + Copy,
+    FN: FnMut(&N) -> IN,
+    IN: IntoIterator<Item = (N, C)>,
+{
+    let (parents, reached) = run_dijkstra_cutoff(start, successors, |_| false, Some(&cutoff));
+    (
+        parents
+            .iter()
+            .skip(1)
+            .map(|(n, (p, c))| (n.clone(), (parents.get_index(*p).unwrap().0.clone(), *c)))
+            .collect(),
+        reached.map(|i| parents.get_index(i).unwrap().0.clone()),
+    )
+}
+
 fn run_dijkstra<N, C, FN, IN, FS>(
     start: &N,
     mut successors: FN,
@@ -160,6 +198,24 @@ where
     IN: IntoIterator<Item = (N, C)>,
     FS: FnMut(&N) -> bool,
 {
+   run_dijkstra_cutoff(start, successors, stop, None)
+}
+
+
+fn run_dijkstra_cutoff<N, C, FN, IN, FS>(
+    start: &N,
+    mut successors: FN,
+    mut stop: FS,
+    mut cutoff: Option<&C>
+) -> (IndexMap<N, (usize, C)>, Option<usize>)
+where
+    N: Eq + Hash + Clone,
+    C: Zero + Ord + Copy,
+    FN: FnMut(&N) -> IN,
+    IN: IntoIterator<Item = (N, C)>,
+    FS: FnMut(&N) -> bool,
+{
+
     let mut to_see = BinaryHeap::new();
     to_see.push(SmallestHolder {
         cost: Zero::zero(),
@@ -185,6 +241,9 @@ where
         };
         for (successor, move_cost) in successors {
             let new_cost = cost + move_cost;
+            if cutoff.map(|c| &new_cost > c).unwrap_or(false) {
+                continue;
+            }
             let n;
             match parents.entry(successor) {
                 Vacant(e) => {
