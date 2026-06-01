@@ -1,0 +1,75 @@
+#!/bin/sh -eu
+
+# Bootstrap the pathfinding crate for development from a fresh clone.
+#
+# This is a pure Rust library crate (no database, services, or assets), so
+# setup just ensures a working toolchain and a compatible dependency set are
+# in place, leaving the project in a state where the build and test commands:
+#
+#   cargo build --all
+#   cargo test --tests --examples
+#
+# succeed. The script is idempotent: safe to run repeatedly.
+#
+# The crate pins an old Rust toolchain in ./rust-toolchain. Cargo.lock is not
+# committed (see .gitignore), so a fresh resolution picks the newest
+# semver-compatible dependencies, some of which now require a newer rustc than
+# the pinned toolchain. To match what CI does for its "minimal versions" job we
+# resolve dependencies to their minimum compatible versions, which build fine
+# on the old toolchain.
+
+# Run from the repository root regardless of the caller's working directory.
+cd "$(dirname "$0")/.."
+
+# rustup is the supported way to obtain the toolchain pinned in ./rust-toolchain.
+if ! command -v rustup >/dev/null 2>&1; then
+  echo "error: rustup not found on PATH." >&2
+  echo "Install Rust via rustup (https://rustup.rs) and re-run bin/setup." >&2
+  exit 1
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "error: cargo not found on PATH (expected alongside rustup)." >&2
+  exit 1
+fi
+
+# Ensure the toolchain pinned in ./rust-toolchain is installed. rustup reads
+# that file automatically for plain `cargo` invocations below; installing is
+# idempotent (a no-op when already present).
+TOOLCHAIN="$(cat rust-toolchain)"
+echo "==> Installing pinned Rust toolchain: ${TOOLCHAIN}"
+rustup toolchain install "${TOOLCHAIN}" --profile minimal
+
+# Resolve dependencies to their minimum compatible versions, but only when no
+# lock file exists yet (deterministic, so re-runs reuse the existing one). This
+# needs a nightly toolchain for the -Zminimal-versions flag.
+if [ ! -f Cargo.lock ]; then
+  echo "==> Installing nightly toolchain (for -Zminimal-versions resolution)"
+  rustup toolchain install nightly --profile minimal
+
+  echo "==> Resolving dependencies to minimum compatible versions"
+  cargo +nightly -Zminimal-versions generate-lockfile
+fi
+
+# Newer cargo writes a lock file format that the pinned (older) toolchain cannot
+# read, so normalize the lock file format version to 3 (the format the pinned
+# toolchain understands). This only rewrites the single unquoted `version = N`
+# format line near the top of Cargo.lock; package `version = "x.y.z"` lines are
+# quoted and left untouched. No-op when already version 3. POSIX-safe in-place
+# edit via a temp file (sed -i is non-portable).
+if [ -f Cargo.lock ]; then
+  sed 's/^version = [0-9][0-9]*$/version = 3/' Cargo.lock > Cargo.lock.tmp
+  mv Cargo.lock.tmp Cargo.lock
+fi
+
+# Fetch and build with the pinned toolchain so the build and test commands
+# succeed afterwards. Both steps are idempotent and cached after the first run.
+echo "==> Fetching dependencies"
+cargo fetch
+
+echo "==> Building crate"
+cargo build --all
+
+echo "==> Done. You can now run:"
+echo "      cargo build --all"
+echo "      cargo test --tests --examples"
